@@ -1,7 +1,7 @@
 from moviepy.editor import VideoFileClip
 import numpy as np
 import cv2
-import matplotlib.pyplot as plt
+import pickle
 
 
 
@@ -19,7 +19,6 @@ def correctCameraDistortion(image):
     mtx=dist2_pickle["mtx"]
     dist=dist2_pickle["dist"]
     img_size = (image.shape[1], image.shape[0])
-    ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(objpoints, imgpoints, img_size,None,None)
     dst = cv2.undistort(image, mtx, dist, None, mtx)
     return dst
 
@@ -72,14 +71,14 @@ def projectBirdToImage(image):
 
 
 def lanePipeline(image):
-    orig_img = img = correctCameraDistortion(img)
+    orig_img = img = correctCameraDistortion(image)
     color_warp=projectImageToBird(orig_img)
 
 
     img = color_gradient_pipeline(img, (120, 254), (30, 100))
     warped=projectImageToBird(img)
     binary_warped = np.uint8(warped*255)
-    print(binary_warped.shape)
+    #print(binary_warped.shape)
 
     # Assuming you have created a warped binary image called "binary_warped"
     # Take a histogram of the bottom half of the image
@@ -167,9 +166,21 @@ def lanePipeline(image):
 
     result = cv2.addWeighted(color_warp, 1, out_img, 0.3, 0)
 
-    findCurvature(left_fitx,right_fitx,ploty)
-    findPositionInLane(color_warp,left_fitx,right_fitx,ploty)
+    left_curverad,right_curverad = findCurvature(left_fitx,right_fitx,ploty)
+    position = findPositionInLane(color_warp,left_fitx,right_fitx)
     result=drawOutput(orig_img,warped,left_fitx,right_fitx,ploty)
+
+    text = 'Radius of Curvature: : {:.2f}m'.format((left_curverad+right_curverad)/2.0)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(result,text,(10,25), font, 1,(255,255,255),2)
+    leftright='right'
+    if (position<0):
+      position=position*-1
+      leftright='left'
+
+    text = 'Vehicle is {:.2f}m {:s} of center'.format(position,leftright)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(result,text,(10,50), font, 1,(255,255,255),2)
     return result
 
 def findCurvature(leftx,rightx,ploty):
@@ -188,20 +199,16 @@ def findCurvature(leftx,rightx,ploty):
     left_curverad = ((1 + (2*left_fit_cr[0]*y_eval*ym_per_pix + left_fit_cr[1])**2)**1.5) / np.absolute(2*left_fit_cr[0])
     right_curverad = ((1 + (2*right_fit_cr[0]*y_eval*ym_per_pix + right_fit_cr[1])**2)**1.5) / np.absolute(2*right_fit_cr[0])
     # Now our radius of curvature is in meters
-    print(left_curverad, 'm', right_curverad, 'm')
+    #print(left_curverad, 'm', right_curverad, 'm')
     # Example values: 632.1 m    626.2 m
+    return left_curverad,right_curverad
     
-def findPositionInLane(image, leftx,rightx,ploty):
+def findPositionInLane(image, leftx,rightx):
     center = (rightx + leftx) / 2
-    plt.imshow(image)
-    plt.plot(left_fitx, ploty, color='yellow')
-    plt.plot(right_fitx, ploty, color='yellow')
-    plt.plot(center, ploty, color='red')
-    plt.xlim(0, 1280)
-    plt.ylim(720, 0)
-    plt.show()    
     position = ((image.shape[1]/2) - center[719]) * 3.7 / 700
-    print(position, 'm')
+    return position
+
+
     
 def drawOutput(orig,warped,left_fitx,right_fitx,ploty):
     # Create an image to draw the lines on
@@ -225,8 +232,12 @@ def drawOutput(orig,warped,left_fitx,right_fitx,ploty):
     return result
     
 
+def processVideo(input_video,output):
+  clip1 = VideoFileClip(input_video)
+  out_clip = clip1.fl_image(lanePipeline)
+  out_clip.write_videofile(output,audio=False)
 
-white_output = 'project_video_out.mp4'
-clip1 = VideoFileClip("project_video.mp4")
-white_clip = clip1.fl_image(lanePipeline) #NOTE: this function expects color images!!
-white_clip.write_videofile(white_output, audio=False)
+
+processVideo('project_video.mp4','project_video_out.mp4')
+#processVideo('challenge_video.mp4','challenge_video_out.mp4')
+#processVideo('harder_challenge_video.mp4','harder_challenge_video_out.mp4')
