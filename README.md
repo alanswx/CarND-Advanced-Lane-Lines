@@ -122,7 +122,8 @@ drawOutput reprojects the image back froma  birdseye view, and draws the found l
 
 ####1.  Here are two of the videos that do well. The harder challenge doesn't work well.
 
-[project_video_outto my video result](./project_video_out.mp4)
+[project_video_out](./project_video_out.mp4)
+
 [challenge_video_out](./challenge_video_out.mp4)
 
 ---
