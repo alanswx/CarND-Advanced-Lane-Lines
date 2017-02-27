@@ -150,9 +150,21 @@ def correctCameraDistortion(image):
     dst = cv2.undistort(image, mtx, dist, None, mtx)
     return dst
 
-# Edit this function to create your own pipeline.
+# http://opencv-python-tutroals.readthedocs.io/en/latest/py_tutorials/py_imgproc/py_colorspaces/py_colorspaces.html
+# http://stackoverflow.com/questions/9179189/detect-yellow-color-in-opencv
+def yellowRGBToBinary(image):
+    hsv = cv2.cvtColor(image, cv2.COLOR_RGB2HSV)
+    lower_y = np.array([20, 100, 100])
+    upper_y = np.array([30, 255, 255])
+    binary = cv2.inRange(hsv, lower_y, upper_y)
+    return binary
+
 def color_gradient_pipeline(img, s_thresh=(200, 255), sx_thresh=(30, 100)):
     img = np.copy(img)
+
+    yellow_mask = yellowRGBToBinary(img)
+
+
     # Convert to HSV color space and separate the V channel
     hsv = cv2.cvtColor(img, cv2.COLOR_RGB2HLS).astype(np.float)
     l_channel = hsv[:,:,1]
@@ -175,7 +187,7 @@ def color_gradient_pipeline(img, s_thresh=(200, 255), sx_thresh=(30, 100)):
     #color_binary = np.dstack(( np.zeros_like(sxbinary), sxbinary, s_binary))
     binary_output =  np.zeros_like(s_binary)
     #binary_output[(s_binary==1) & (sxbinary==1)] = 1
-    binary_output[((s_binary == 1) | (sxbinary == 1))] = 1
+    binary_output[((s_binary == 1) | (sxbinary == 1) | (yellow_mask==1))] = 1
     return binary_output
     #return color_binary
     
@@ -282,8 +294,11 @@ def findCurvature(leftx,rightx,ploty):
     right_fit_cr = np.polyfit(ploty*ym_per_pix, rightx*xm_per_pix, 2)
 
     # Calculate the new radii of curvature
-    left_curverad = ((1 + (2*left_fit_cr[0]*y_eval*ym_per_pix + left_fit_cr[1])**2)**1.5) / np.absolute(2*left_fit_cr[0])
-    right_curverad = ((1 + (2*right_fit_cr[0]*y_eval*ym_per_pix + right_fit_cr[1])**2)**1.5) / np.absolute(2*right_fit_cr[0])
+    left_curverad = ((1 + (2*left_fit_cr[0]*y_eval + left_fit_cr[1])**2)**1.5) / np.absolute(2*left_fit_cr[0])
+    right_curverad = ((1 + (2*right_fit_cr[0]*y_eval + right_fit_cr[1])**2)**1.5) / np.absolute(2*right_fit_cr[0])
+
+    #left_curverad = ((1 + (2*left_fit_cr[0]*y_eval*ym_per_pix + left_fit_cr[1])**2)**1.5) / np.absolute(2*left_fit_cr[0])
+    #right_curverad = ((1 + (2*right_fit_cr[0]*y_eval*ym_per_pix + right_fit_cr[1])**2)**1.5) / np.absolute(2*right_fit_cr[0])
     # Now our radius of curvature is in meters
     #print(left_curverad, 'm', right_curverad, 'm')
     # Example values: 632.1 m    626.2 m
@@ -309,12 +324,8 @@ def drawOutput(orig,left_fitx,right_fitx,ploty):
     # Draw the lane onto the warped blank image
     cv2.fillPoly(color_warp, np.int_([pts]), (0,255, 0))
     newwarp=projectBirdToImage(color_warp)
-# Warp the blank back to original image space using inverse perspective matrix (Minv)
-#newwarp = cv2.warpPerspective(color_warp, Minv, (image.shape[1], image.shape[0])) 
-# Combine the result with the original image
+    # Combine the result with the original image
     result = cv2.addWeighted(orig, 1, newwarp, 0.3, 0)
-    #plt.imshow(result)
-    #plt.show()
     return result
    
 
@@ -367,6 +378,7 @@ def lanePipeline(image):
     if (left_line.best_fit is None or right_line.best_fit is None or line_is_parallel):
        left_line.validate_and_update(leftx,lefty,left_fitx,left_curverad,position)
        right_line.validate_and_update(rightx,righty,right_fitx,right_curverad,position)
+       
 
     #
     # draw the lines onto the image
@@ -389,7 +401,7 @@ def lanePipeline(image):
         text = 'not parallel'
         cv2.putText(result,text,(10,130), font, 1,(255,255,255),2)
 
-    text = 'Radius of Curvature: : {:.2f}m'.format((left_line.radius_of_curvature+right_line.radius_of_curvature)/2.0)
+    text = 'Radius of Curvature: {:.0f}m'.format((left_line.radius_of_curvature+right_line.radius_of_curvature)/2.0)
     font = cv2.FONT_HERSHEY_SIMPLEX
     cv2.putText(result,text,(10,25), font, 1,(255,255,255),2)
 
@@ -409,6 +421,7 @@ def processVideo(input_video,output):
   out_clip.write_videofile(output,audio=False)
 
 
-#processVideo('challenge_video.mp4','challenge_video_out.mp4')
-#processVideo('project_video.mp4','project_video_out.mp4')
-processVideo('harder_challenge_video.mp4','harder_challenge_video_out.mp4')
+if __name__ == '__main__':
+    processVideo('project_video.mp4','project_video_out.mp4')
+    processVideo('challenge_video.mp4','challenge_video_out.mp4')
+    processVideo('harder_challenge_video.mp4','harder_challenge_video_out.mp4')
