@@ -2,8 +2,84 @@ from moviepy.editor import VideoFileClip
 import numpy as np
 import cv2
 import pickle
+from collections import deque
 
 
+class Line():
+    def __init__(self):
+        # was the line detected in the last iteration?
+        self.detected = False  
+        # x values of the last n fits of the line
+        self.recent_xfitted = []
+        #average x values of the fitted line over the last n iterations
+        self.bestx = None     
+        #polynomial coefficients averaged over the last n iterations
+        self.best_fit = None  
+        #polynomial coefficients for the most recent fit
+        self.current_fit = [np.array([False])]  
+        #radius of curvature of the line in some units
+        self.radius_of_curvature = None 
+        #distance in meters of vehicle center from the line
+        self.line_base_pos = None 
+        #difference in fit coefficients between last and new fits
+        self.diffs = np.array([0,0,0], dtype='float') 
+        #x values for detected line pixels
+        self.allx = None  
+        #y values for detected line pixels
+        self.ally = None
+        self.badframenum = 0
+        self.badframe = False
+        self.badframeratio = False
+
+    #
+    # validate the new values, before we put them into the line
+    #
+    # return false if we have too many bad frames
+    def validate_and_update(self,allx,ally,fitx,curverad,position):
+
+        self.badframe = False
+
+        #
+        #  validate before changing
+        #
+        if self.allx is not None:
+        
+            # check to see if the curverad changes too much
+            #print("=====")
+            percentage = abs(((self.radius_of_curvature - curverad)/curverad))
+            #print(self.radius_of_curvature,' ', curverad,' ',percentage)
+         
+            if ( (percentage > 30) and self.badframenum < 3):
+               #print("TOO FAR?")
+               self.badframe = True
+               self.badframeratio = percentage
+               self.badframenum = self.badframenum + 1
+               return
+       
+            self.badframenum=0 
+        #
+        #  update  
+        #
+        self.allx = allx
+        self.ally = ally
+
+        self.current_fit = fitx #np.polyfit(self.allx, self.ally, 2)
+
+
+        self.recent_xfitted.append(self.current_fit)
+        # if we are larger than our averaging window, drop one
+        if (len(self.recent_xfitted) > 5):
+           self.recent_xfitted = self.recent_xfitted[1:]
+ 
+        # best_fit is the average of the recent_xfitted 
+        if (len(self.recent_xfitted) > 1):
+            #self.best_fit = np.mean(self.recent_xfitted)
+            self.best_fit = (self.best_fit * 4 + self.current_fit) / 5
+        else:
+            self.best_fit = self.current_fit
+ 
+        self.radius_of_curvature = curverad
+        return
 
 #
 #  This function for our pipeline removes the camera distortion
@@ -70,23 +146,11 @@ def projectBirdToImage(image):
     return binary_warped
 
 
-def lanePipeline(image):
-    orig_img = img = correctCameraDistortion(image)
-    color_warp=projectImageToBird(orig_img)
 
-
-    img = color_gradient_pipeline(img, (120, 254), (30, 100))
-    warped=projectImageToBird(img)
-    binary_warped = np.uint8(warped*255)
-    #print(binary_warped.shape)
-
+def findLanesByHistogram(binary_warped):
     # Assuming you have created a warped binary image called "binary_warped"
     # Take a histogram of the bottom half of the image
     histogram = np.sum(binary_warped[binary_warped.shape[0]/2:,:], axis=0)
-    #plt.plot(histogram)
-    #plt.show()
-    # Create an output image to draw on and  visualize the result
-    out_img = np.dstack((binary_warped, binary_warped, binary_warped))*255
 
     # Find the peak of the left and right halves of the histogram
     # These will be the starting point for the left and right lines
@@ -126,9 +190,6 @@ def lanePipeline(image):
         win_xleft_high = leftx_current + margin
         win_xright_low = rightx_current - margin
         win_xright_high = rightx_current + margin
-        # Draw the windows on the visualization image
-        cv2.rectangle(out_img,(win_xleft_low,win_y_low),(win_xleft_high,win_y_high),(0,255,0), 2) 
-        cv2.rectangle(out_img,(win_xright_low,win_y_low),(win_xright_high,win_y_high),(0,255,0), 2) 
         # Identify the nonzero pixels in x and y within the window
         good_left_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & (nonzerox >= win_xleft_low) & (nonzerox < win_xleft_high)).nonzero()[0]
         good_right_inds = ((nonzeroy >= win_y_low) & (nonzeroy < win_y_high) & (nonzerox >= win_xright_low) & (nonzerox < win_xright_high)).nonzero()[0]
@@ -151,37 +212,10 @@ def lanePipeline(image):
     rightx = nonzerox[right_lane_inds]
     righty = nonzeroy[right_lane_inds] 
 
-    # Fit a second order polynomial to each
-    left_fit = np.polyfit(lefty, leftx, 2)
-    right_fit = np.polyfit(righty, rightx, 2)
+    return leftx,lefty,rightx,righty
 
 
-    # Generate x and y values for plotting
-    ploty = np.linspace(0, binary_warped.shape[0]-1, binary_warped.shape[0] )
-    left_fitx = left_fit[0]*ploty**2 + left_fit[1]*ploty + left_fit[2]
-    right_fitx = right_fit[0]*ploty**2 + right_fit[1]*ploty + right_fit[2]
 
-    out_img[nonzeroy[left_lane_inds], nonzerox[left_lane_inds]] = [255, 0, 0]
-    out_img[nonzeroy[right_lane_inds], nonzerox[right_lane_inds]] = [0, 0, 255]
-
-    result = cv2.addWeighted(color_warp, 1, out_img, 0.3, 0)
-
-    left_curverad,right_curverad = findCurvature(left_fitx,right_fitx,ploty)
-    position = findPositionInLane(color_warp,left_fitx,right_fitx)
-    result=drawOutput(orig_img,warped,left_fitx,right_fitx,ploty)
-
-    text = 'Radius of Curvature: : {:.2f}m'.format((left_curverad+right_curverad)/2.0)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(result,text,(10,25), font, 1,(255,255,255),2)
-    leftright='right'
-    if (position<0):
-      position=position*-1
-      leftright='left'
-
-    text = 'Vehicle is {:.2f}m {:s} of center'.format(position,leftright)
-    font = cv2.FONT_HERSHEY_SIMPLEX
-    cv2.putText(result,text,(10,50), font, 1,(255,255,255),2)
-    return result
 
 def findCurvature(leftx,rightx,ploty):
     # Define conversions in x and y from pixels space to meters
@@ -203,16 +237,16 @@ def findCurvature(leftx,rightx,ploty):
     # Example values: 632.1 m    626.2 m
     return left_curverad,right_curverad
     
-def findPositionInLane(image, leftx,rightx):
+def findPositionInLane(centerx, leftx,rightx):
     center = (rightx + leftx) / 2
-    position = ((image.shape[1]/2) - center[719]) * 3.7 / 700
+    position = (centerx - center[719]) * 3.7 / 700
     return position
 
 
     
-def drawOutput(orig,warped,left_fitx,right_fitx,ploty):
+def drawOutput(orig,left_fitx,right_fitx,ploty):
     # Create an image to draw the lines on
-    warp_zero = np.zeros_like(warped).astype(np.uint8)
+    warp_zero = np.zeros_like(orig[:,:,0]).astype(np.uint8)
     color_warp = np.dstack((warp_zero, warp_zero, warp_zero))
 
     # Recast the x and y points into usable format for cv2.fillPoly()
@@ -230,7 +264,141 @@ def drawOutput(orig,warped,left_fitx,right_fitx,ploty):
     #plt.imshow(result)
     #plt.show()
     return result
-    
+   
+
+
+left_line = Line() 
+right_line = Line()
+
+ 
+def lanePipeline(image):
+    global left_line
+    global right_line
+
+    # correct the camera distortion 
+    orig_img = correctCameraDistortion(image)
+
+    # threshold the image and try to pull just the lines out
+    img = color_gradient_pipeline(orig_img, (120, 254), (30, 100))
+    # switch to birds eye projection
+    warped=projectImageToBird(img)
+    # fix the image to be 0-255 instead of 0-1
+    binary_warped = np.uint8(warped*255)
+
+    #
+    #  Optimize the histogram if we already have two good lines
+    #
+    #if (left_line is not None and right_line is not None):
+      
+
+    # find the lanes using the historgram method
+    leftx,lefty,rightx,righty = findLanesByHistogram(binary_warped)
+    # Fit a second order polynomial to each
+    left_fit = np.polyfit(lefty, leftx, 2)
+    right_fit = np.polyfit(righty, rightx, 2)
+
+    line_is_parallel=False
+    if (np.abs(left_fit[0]-right_fit[0]) < 0.0004 and np.abs(left_fit[1]-right_fit[1])<0.6 ):
+      line_is_parallel=True
+
+    # Generate x and y values for plotting
+    ploty = np.linspace(0, binary_warped.shape[0]-1, binary_warped.shape[0] )
+    left_fitx = left_fit[0]*ploty**2 + left_fit[1]*ploty + left_fit[2]
+    right_fitx = right_fit[0]*ploty**2 + right_fit[1]*ploty + right_fit[2]
+
+    # find the curvature of the left and right lane marker
+    left_curverad,right_curverad = findCurvature(left_fitx,right_fitx,ploty)
+    # find where we are in the lane
+    position = findPositionInLane((img.shape[1]/2),left_fitx,right_fitx)
+
+    if (left_line.best_fit is None or right_line.best_fit is None or line_is_parallel):
+       left_line.validate_and_update(leftx,lefty,left_fitx,left_curverad,position)
+       right_line.validate_and_update(rightx,righty,right_fitx,right_curverad,position)
+
+    #
+    # draw the lines onto the image
+    #
+    result=drawOutput(orig_img,left_line.best_fit,right_line.best_fit,ploty)
+
+    #def validate_and_update(self,fitx,curverad):
+    # check to see if the left and right lines are valid
+    #left_line_valid = True
+    #if (left_line is not None):
+    #     if not left_line.validate(left_fitx,left_curverad):
+    #        left_line_valid = False
+    #else:
+    #    left_line = Line()
+    #right_line_valid = True
+    #if (right_line is not None):
+    #     if not right_line.validate(right_fitx,right_curverad):
+    #        right_line_valid = False
+    #else:
+    #    right_line = Line()
+    # 
+    #if left_line_valid:
+    #     cur_left_line.detected = True
+    #     cur_left_line.radius_of_curvature= left_curverad
+    #     cur_left_line.line_base_pos = left_fitx[719] 
+    #    cur_left_line.current_fit = left_fitx
+    #    cur_left_line.recent_xfitted.append(left_fitx)
+    #    if (len(cur_left_line.recent_xfitted)>5):
+    #       cur_left_line.recent_xfitted.pop()
+
+    #if right_line_valid:
+    #    cur_right_line.detected = True
+    #    cur_right_line.radius_of_curvature= right_curverad
+    #    cur_right_line.line_base_pos = right_fitx[719] 
+    #    cur_right_line.current_fit = right_fitx
+    #    cur_right_line.recent_xfitted.append(right_fitx)
+    #    if (len(cur_right_line.recent_xfitted)>5):
+    #       cur_right_line.recent_xfitted.pop()
+        #average x values of the fitted line over the last n iterations
+        #self.bestx = None     
+        #polynomial coefficients averaged over the last n iterations
+        #self.best_fit = None  
+        #polynomial coefficients for the most recent fit
+        #self.current_fit = [np.array([False])]  
+        #distance in meters of vehicle center from the line
+        #self.line_base_pos = None 
+        #difference in fit coefficients between last and new fits
+        #self.diffs = np.array([0,0,0], dtype='float') 
+        #x values for detected line pixels
+        #self.allx = None  
+        #y values for detected line pixels
+        #self.ally = None
+
+
+
+
+    #
+    #  draw the radius and position on image
+    #
+    if (left_line.badframe):
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        text = 'bad frame left {:.2f}'.format(left_line.badframeratio)
+        cv2.putText(result,text,(10,80), font, 1,(255,255,255),2)
+    if (right_line.badframe):
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        text = 'bad frame right {:.2f}'.format(right_line.badframeratio)
+        cv2.putText(result,text,(10,105), font, 1,(255,255,255),2)
+    if (line_is_parallel is False):
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        text = 'not parallel'
+        cv2.putText(result,text,(10,130), font, 1,(255,255,255),2)
+
+    text = 'Radius of Curvature: : {:.2f}m'.format((left_line.radius_of_curvature+right_line.radius_of_curvature)/2.0)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(result,text,(10,25), font, 1,(255,255,255),2)
+
+    leftright='right'
+    if (position<0):
+      position=position*-1
+      leftright='left'
+
+    text = 'Vehicle is {:.2f}m {:s} of center'.format(position,leftright)
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(result,text,(10,50), font, 1,(255,255,255),2)
+    return result
 
 def processVideo(input_video,output):
   clip1 = VideoFileClip(input_video)
@@ -238,6 +406,6 @@ def processVideo(input_video,output):
   out_clip.write_videofile(output,audio=False)
 
 
-processVideo('project_video.mp4','project_video_out.mp4')
 #processVideo('challenge_video.mp4','challenge_video_out.mp4')
-#processVideo('harder_challenge_video.mp4','harder_challenge_video_out.mp4')
+#processVideo('project_video.mp4','project_video_out.mp4')
+processVideo('harder_challenge_video.mp4','harder_challenge_video_out.mp4')
